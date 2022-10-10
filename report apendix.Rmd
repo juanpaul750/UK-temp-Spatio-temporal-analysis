@@ -1,0 +1,811 @@
+---
+title: 'SPACE AND TIME APPENDIX : CODE'
+output: word_document
+---
+
+```{r echo=T,eval=F,warning=FALSE,message=FALSE, error=T}
+library(geoR)
+library(esquisse)
+library(mnormt)
+require(ggplot2)
+library(viridis)
+library(forecast)
+library(dlm)
+library(naniar)
+library(sp)
+library(rgdal)
+library(gstat)
+library(tidyverse)
+library(ggmap)
+library(raster)
+library(rgdal)
+library(ggpubr)
+library(automap)
+library(xts)
+library(tsibble)
+library(forecast)
+
+#install.packages('raster')
+
+# READING DATA:
+Temp_org <- read.csv('MaxTemp.csv')
+meta_org<- read.csv('metadata.csv')
+Temp_org$Date =  as.Date(as.character(Temp_org$Date), format = "%Y%m%d" )
+
+################################### INITAL DATA ANALYSIS: ########################################
+
+summary(meta_org)
+summary(Temp_org)
+
+# WORLD MAP COORDINATES
+worldmap = data.frame(map_data('world'))
+worldmap2 = filter(worldmap, region  == 'UK')
+df_uk = worldmap2[,1:2]
+df_uk2 =  worldmap2[,1:3]
+
+# SUBREGION:
+great_britan = filter(worldmap2,subregion == "Great Britain")
+great_britan_coord = great_britan[,1:2]
+
+#df_uk2 =  great_britan[,1:3]
+
+# CREATING DF WITH TEMP ELEVAION AND COORDIMATES:
+max_temp<- data.frame(Temp_org[256,1:21])
+temp_long = max_temp%>%gather(variable,temperature,c(-Date))
+
+new_meta_df = data.frame(meta_org,temp = temp_long$temperature)
+
+# INITIAL VISUAL ANALYSIS OF SPATIAL DATA:
+ggplot() + 
+  geom_polygon(data = worldmap2, 
+               aes(x = long, 
+                   y = lat, 
+                   group = group),fill = 'white', 
+               color = 'black') + 
+  coord_fixed(ratio = 1.3, 
+              xlim = c(-10,4), 
+              ylim = c(50, 61))+
+  geom_point(data =new_meta_df, aes(x = Longitude, y = Latitude,colour =
+                                      Location ), size = 4L)+
+  theme(panel.background = element_rect(fill = NA))+labs(title = "Location Map")
+
+p1 = ggplot() + 
+  geom_polygon(data = worldmap2, 
+               aes(x = long, 
+                   y = lat, 
+                   group = group),fill = 'white', 
+               color = 'black') + 
+  coord_fixed(ratio = 1.3, 
+              xlim = c(-10,3), 
+              ylim = c(50, 59))+
+  geom_point(data =new_meta_df, 
+             aes(x = Longitude, y = Latitude,
+                 colour = temp ),shape = "circle", 
+             size = 4L)+ scale_color_gradient2(low = "#00DFFD",midpoint =17, mid = "yellow",  high = "red")+
+  theme(panel.background = element_rect(fill = NA))+labs(title = "Temperature Map")
+
+summary(new_meta_df)
+
+p2 = ggplot() + 
+  geom_polygon(data = worldmap2, 
+               aes(x = long, 
+                   y = lat, 
+                   group = group),fill = 'white', 
+               color = 'black') + 
+  coord_fixed(ratio = 1.3, 
+              xlim = c(-10,3), 
+              ylim = c(50, 59))+
+  geom_point(data = new_meta_df, 
+             aes(x = Longitude, y = Latitude,
+                 colour = Elevation ),shape = "circle", 
+             size = 4L)+ scale_color_gradient2(low = "blue",midpoint =260, mid = "white", high = "red")+
+  theme(panel.background = element_rect(fill = NA))+labs(title = "Elevation Map")
+
+plot_maps = ggarrange(p1,p2, ncol = 2, nrow = 1)
+plot_maps
+
+
+
+
+######################################### SPATIAL ANALYSIS ##############################
+
+# creating Geo Date:
+new_meta_df
+new_meta_df_with_NA = new_meta_df
+new_meta_df_with_NA$temp[c(10,11,18)] = NA
+new_meta_df[c(10,11,18),]
+#Parana data set:
+
+data(parana)
+summary(parana)
+
+
+#GEODATA WITHOUT ELEVATION
+geo_data = as.geodata(new_meta_df_with_NA,coords.col=2:3,data.col =5,borders = T) 
+dup = dup.coords(geo_data)
+geo_data = jitterDupCoords(geo_data,max=0.1,min=0.05) 
+plot(geo_data)
+
+# GEO DATA WITH ELEVATION
+geo_data_with_elv = as.geodata(new_meta_df_with_NA,coords.col=2:3,data.col=c(5,4))
+dup = dup.coords(geo_data_with_elv)
+geo_data_with_elv = jitterDupCoords(geo_data_with_elv,max=0.1,min=0.05) 
+plot(geo_data_with_elv)
+
+#VARIOGRAM:
+variog_spat = variog(geo_data)
+plot(variog_spat)
+spat_temp.env = variog.mc.env(geo_data, obj.variog = variog_spat)
+spat_temp.v4 = variog4(geo_data)
+plot(spat_temp.v4, env = spat_temp.env, omni = TRUE)
+
+# 1st trend:
+variog_spat_1st = variog(geo_data, trend = '1st')
+plot(variog_spat_1st)
+spat_temp.v4_1st = variog4(geo_data, trend = '1st')
+plot(spat_temp.v4_1st)
+
+# 2nd trend:
+spat_temp.v4_2nd = variog4(geo_data, trend = '2nd')
+plot(spat_temp.v4_2nd)
+
+# gaussian process:
+#MATTERN:
+# without Trend
+max_lik_temp = likfit(geo_data, ini=c(0.5,0.5), fix.nugget = F, cov.model = 'matern', kappa = 1.5)
+summary(max_lik_temp)
+res_max_lik = likfit(geo_data, ini=c(0.5,0.5), fix.nugget = F, cov.model = 'matern', kappa = 1.5,
+                     lik.met = "REML")
+summary(res_max_lik)
+
+#with trend
+max_lik_t1 = likfit(geo_data, ini=c(0.5,0.5), fix.nugget = F, trend = '1st', cov.model = 'matern', kappa = 1.5)
+summary(max_lik_t1)
+res_max_lik_t1 = likfit(geo_data, ini=c(0.5,0.5), fix.nugget = F,trend = '1st', cov.model = 'matern', kappa =1.5,
+                        lik.met = "REML")
+summary(res_max_lik_t1)
+
+
+# EXPONENTIAL:
+# without Trend
+max_lik_temp_e = likfit(geo_data, ini=c(0.5,0.5), fix.nugget = F, cov.model = 'exponential', kappa = 1.5)
+summary(max_lik_temp_e)
+res_max_lik_e = likfit(geo_data, ini=c(0.5,0.5), fix.nugget = F, cov.model = 'exponential', kappa = 1.5,
+                     lik.met = "REML")
+summary(res_max_lik_e)
+
+#with trend
+max_lik_t1_e = likfit(geo_data, ini=c(0.5,0.5), fix.nugget = F, trend = '1st', cov.model = 'exponential', kappa = 1.5)
+summary(max_lik_t1_e)
+
+res_max_lik_t1_e = likfit(geo_data, ini=c(0.5,0.5), fix.nugget = F,trend = '1st', cov.model = 'exponential', kappa =1.5,
+                        lik.met = "REML")
+summary(res_max_lik_t1_e)
+
+#POWERED EXPONENTIAL:
+
+# without Trend
+max_lik_temp_Pe = likfit(geo_data, ini=c(0.5,0.5), fix.nugget = F, cov.model = 'powered.exponential', kappa = 1.5)
+summary(max_lik_temp_Pe)
+res_max_lik_Pe = likfit(geo_data, ini=c(0.5,0.5), fix.nugget = F, cov.model = 'powered.exponential', kappa = 1.5,
+                       lik.met = "REML")
+summary(res_max_lik_Pe)
+
+#with trend
+max_lik_t1_Pe = likfit(geo_data, ini=c(0.5,0.5), fix.nugget = F, trend = '1st', cov.model = 'powered.exponential', kappa = 1.5)
+summary(max_lik_t1_Pe)
+
+res_max_lik_t1_Pe = likfit(geo_data, ini=c(0.5,0.5), fix.nugget = F,trend = '1st', cov.model = 'powered.exponential', kappa =1.5,
+                          lik.met = "REML")
+summary(res_max_lik_t1_Pe)
+
+
+cross_valid = xvalid(geo_data, model = res_max_lik_t1)
+par(mfcol = c(5,2), mar = c(4,4,1,1))
+plot(cross_valid)
+
+
+
+# Restrictec likelihood pred mattern 1st trend restricted likelihood:
+pred.grid <- expand.grid(seq(-10, 4, by = 0.1), seq(50,60, by = 0.1))
+preds_reml <- krige.conv(geo_data, loc = pred.grid, krige = krige.control(obj.model = res_max_lik_t1))
+
+image(preds_reml, col = viridis::viridis(1500), zlim = c(0,max(c(preds_reml$predict))),
+      coords.data = new_meta_df[c(10,11,18),2:3], main = 'Mattern REML Mean 1st trend  ', xlab = 'x', ylab = 'y', x.leg = c(5,9), y.leg= c(58,59))
+
+image(preds_reml, col =viridis::viridis(1500), values = preds_reml$krige.var, zlim = c(0,20), coords.data = new_meta_df[c(10,11,18),2:3],
+      main = 'Variance - REML 1st trend mattern', x.leg = c(5,9), y.leg= c(58,59))
+
+
+
+######################################### KRIGING ##################################
+
+# changing data to make prediction
+# Krigeing:
+data_cords_meta = data.frame(long = new_meta_df$Longitude,lat = new_meta_df$Latitude)
+data_temp_sp1 = data.frame(temp = new_meta_df$temp, elv = new_meta_df$Elevation )
+data_temp_sp2 = data.frame(temp = new_meta_df$temp, elv = new_meta_df$Elevation )
+data_temp_sp2$temp[c(10,11,18)] = NA
+
+#missing values generated:
+spdf_meta_temp_with_NA = SpatialPointsDataFrame(data_cords_meta,data_temp_sp2)
+miss <- is.na(spdf_meta_temp_with_NA$temp)
+table(miss)
+
+# spatial data plots:
+hist(spdf_meta_temp_with_NA$temp)
+spplot(spdf_meta_temp_with_NA,"temp")
+
+
+# SPDF WITHOUT NA:
+spdf_meta_temp = SpatialPointsDataFrame(data_cords_meta,data_temp_sp1)
+hist(spdf_meta_temp$temp)
+
+
+# linear trends:
+m_trend <- lm(temp ~ long + lat +elv, as.data.frame(spdf_meta_temp_with_NA))
+summary(m_trend)
+# linear prediction:
+misssing_pred_lm = as.data.frame(spdf_meta_temp_with_NA)[miss,]
+predictions_lm_model <- predict(m_trend, newdata = misssing_pred_lm, se.fit = TRUE)
+
+# Check the coefficients seems to be linaer:
+
+
+# VARIOGRAM WITH CONSTANT TREND:
+con_variog = variogram(temp ~ 1, spdf_meta_temp_with_NA[!miss, ])
+plot(con_variog)
+
+# VARIOGRAM WITH LINEAR TREND:
+temp_variogram = variogram(temp~long+lat+elv,spdf_meta_temp_with_NA[!miss, ])
+plot(temp_variogram)
+
+
+# Eyeball the variogram and estimate the initial parameters
+
+nugget <- 0.1
+psill <- 0.6
+range <- 3
+
+#install.packages('gstat')
+
+
+# Fit the variogram
+v_model <- fit.variogram(
+  temp_variogram, 
+  model = vgm(
+    model = "Ste",
+    nugget = nugget,
+    psill = psill,
+    range = range,
+    kappa = 0.5
+  )
+)
+
+plot(temp_variogram, model = v_model)
+print(v_model)
+
+km <- krige(temp~long+lat+elv, spdf_meta_temp_with_NA[!miss, ],
+            newdata = spdf_meta_temp_with_NA[miss, ], model = v_model)
+summary(km)
+names(km)
+spplot(km, "var1.pred")
+
+km$var1.pred
+km$variance
+
+# CREATING BOUNDARY FOR SPATIAL DATA ANALYSIS:
+
+# for looping:
+all_poly_uk = SpatialPolygons(list())
+
+for(i in df_uk2$group){
+  reg = df_uk2[df_uk2$group == i,]
+  cord_matrix = data.matrix(reg[,1:2])
+  shape_poly = spPolygons(cord_matrix)
+  all_poly_uk = bind(all_poly_uk,shape_poly)
+}
+plot(all_poly_uk)
+
+plot(all_poly_uk);points(spdf_meta_temp_with_NA)
+
+# Finding the boundary:
+bbox(all_poly_uk)
+
+grid <- GridTopology(c(-8.144824, 50.021385), c(0.1, 0.1), c(100, 110))
+?GridTopology
+install.packages('raster')
+library(raster)
+
+gridpoints <- SpatialPoints(grid, proj4string = CRS(projection(all_poly_uk)))
+plot(gridpoints)
+
+# croping outside points:
+cropped_gridpoints <- crop(gridpoints , all_poly_uk)
+plot(cropped_gridpoints)
+
+library(rgeos)
+
+
+spgrid <- SpatialPixels(cropped_gridpoints)
+coordnames(spgrid) <- c("long", "lat")
+plot(spgrid)
+
+
+# Calc the probability of temp exceeding 17
+install.packages("raster")
+library(gstat)
+
+km <- krige(temp~long+lat+elv, spdf_meta_temp_with_NA[!miss, ],
+            newdata = spgrid, model = v_model)
+
+summary(km)
+
+# Temp prediction:
+ptemp <- 1 - pnorm(15, mean = km$var1.pred, sd = km$var1.var)
+km$temp = km$var1.pred
+km$variance = km$var1.var
+# Map the probability of alkaline samples
+#spplot(km, zcol = "ptemp")
+
+spplot(km, zcol = "temp")
+
+plot(km, zcol = "temp")
+plot(all_poly_uk, add = T)
+
+spplot(km, zcol = "variance")
+
+
+# Kriging with linear trend, predicting over the missing points
+temp_auto_mat <- autoKrige(
+  temp ~ long + lat, 
+  input_data = spdf_meta_temp_with_NA[!miss, ], 
+  new_data =spgrid, 
+  model = "Mat",
+  kappa = c(0.5,1, 1.5, 2)
+)
+
+# Plot the variogram, predictions, and standard error
+plot(temp_auto_mat$krige_output)
+plot(all_poly_uk, add = T)
+
+?autoKrige
+
+
+# Kriging with linear trend with EXPONENTIAL Coefficient
+temp_auto_exp <- autoKrige(
+  temp ~ long + lat, 
+  input_data = spdf_meta_temp_with_NA[!miss, ], 
+  new_data =spgrid, 
+  model = "Exp"
+)
+
+# Plot the variogram, predictions, and standard error
+plot(temp_auto_exp$krige_output)
+plot(all_poly_uk, add = T)
+
+
+
+######################################## BRITAN ################################################
+#GEODATA WITHOUT ELEVATION
+geo_data_britan = as.geodata(new_meta_df_with_NA,coords.col=2:3,data.col =5,borders = T) 
+geo_data_britan$borders = great_britan_coord
+dup = dup.coords(geo_data_britan)
+geo_data_britan = jitterDupCoords(geo_data_britan,max=0.1,min=0.05) 
+plot(geo_data_britan)
+
+
+
+#with trend
+res_max_lik_t1 = likfit(geo_data_britan, ini=c(0.5,0.5), fix.nugget = F,trend = '1st', cov.model = 'matern', kappa =1.5,
+                        lik.met = "REML")
+summary(res_max_lik_t1)
+
+
+
+
+
+# Restrictec likelihood pred mattern 1st trend restricted likelihood:
+pred.grid_britan <- expand.grid(seq(-10, 4, by = 0.1), seq(50,60, by = 0.1))
+preds_reml_britan <- krige.conv(geo_data_britan, loc = pred.grid, krige = krige.control(obj.model = res_max_lik_t1))
+
+image(preds_reml_britan, col = viridis::viridis(1500), zlim = c(0,max(c(preds_reml_britan$predict))),
+      coords.data = new_meta_df[c(10,11,18),2:3], main = 'Mattern REML Mean 1st trend  ', xlab = 'x', ylab = 'y', x.leg = c(5,9), y.leg= c(58,59))
+
+image(preds_reml_britan, col =viridis::viridis(100), values = preds_reml_britan$krige.var, zlim = c(0,10), coords.data = new_meta_df[c(10,11,18),2:3],
+      main = 'Variance - REML 1st trend mattern', x.leg = c(5,9), y.leg= c(58,59))
+
+
+################################# TIMESERIES: ########################################
+
+# timeseries for all time:
+
+total_temp = xts(Temp_org[,2:21], Temp_org$Date)
+plot(total_temp, main = 'Time Series of temperature for all Regions')
+
+spec.pgram(total_temp, log = 'no')
+
+BoxCox.lambda(total_temp$Yeovilton)
+BoxCox.lambda(total_temp$Stornoway)
+BoxCox.lambda(total_temp$London)
+BoxCox.lambda(total_temp$Dun_Fell)
+
+# Time series for london, Dunfell, Lyneham, Stroway
+
+ggplot(Temp_org)+
+  geom_line(aes(x = Date, y = Dun_Fell, colour = "dun fell"),size = 0.8)+
+  geom_line(aes(x = Date, y = London, colour = "London"),size = 0.8)+
+  geom_line(aes(x = Date, y = Stornoway, colour = "Stornoway"),size = 0.8)+
+  geom_line(aes(x = Date, y = Lyneham, colour = "Lyneham"),size = 0.8)+
+  geom_line(aes(x = Date, y = Yeovilton , colour = "Yeovilton "),size = 0.8)+
+  labs(title = "Timeseries ", x = "DATE", y = "TEMPERATURE", fill = "Dunfell") +
+  theme_minimal()
+
+
+# times series for yeovilton
+
+time_series_data = Temp_org[1:305,]
+time_series_data
+
+
+# monthly average:
+Temp_org$month = months(Temp_org$Date)
+Temp_org$year = format(Temp_org$Date, format = '%y')
+
+df1 = aggregate(Yeovilton  ~ month,Temp_org,mean )
+df1$month_id = c(4,8,12,2,1,7,6,3,5,11,10,9)
+df1 =df1%>%arrange(month_id)
+month_trend = ts (df1$Yeovilton, start = 1)
+plot(month_trend)
+
+
+
+# WEEKLY AVERAGE:
+df_Yeovilton  = data.frame(date = Temp_org$Date , temp = as.integer(Temp_org$Yeovilton))
+
+df_Yeovilton_weekly = df_Yeovilton %>% 
+  as_tsibble(index = date) %>% 
+  index_by(year_week = ~ yearweek(.)) %>% # weekly aggregates
+  summarise(across(where(is.integer), mean, rm.na = TRUE))
+
+weekly_trend =  ts(df_Yeovilton_weekly$temp, start = df_Yeovilton_weekly$year_week)
+
+plot(weekly_trend)
+
+
+
+##################################### ARIMA ############################################
+yeovilton_temp = xts(time_series_data$Yeovilton,time_series_data$Date )
+plot(yeovilton_temp)
+
+par(mfrow=c(1,3))
+plot(yeovilton_temp, main = "No Difference")
+plot(diff(yeovilton_temp), main = "1st Difference")
+plot(acf_pacf)
+plot(diff(diff(yeovilton_temp)), main = "2nd Difference")
+
+# ACF AND PACF:
+
+acf_pacf = diff(yeovilton_temp)
+par(mfrow=c(1,2))
+acf(acf_pacf,na.action = na.pass,main = 'ACF')
+pacf(acf_pacf,na.action = na.pass,main = 'PACF')
+
+
+# AUTO ARIMA:
+model_auto_arima1 <- auto.arima(yeovilton_temp, max.p = 4, max.q = 4, max.d = 1, seasonal = FALSE)
+model_auto_arima
+tsdiag(model_auto_arima1)
+
+# alph1 = 
+# alph2 = (-0.2401,0.0003)
+#beta1 = 
+
+# ARIMA (111)
+model_arima2 = arima(yeovilton_temp,order = c(1,1,1))
+model_arima2
+summary(model_arima2)
+tsdiag(model_arima2)
+
+# ARIMA (1,1,2)
+model_arima3 = arima(yeovilton_temp,order = c(1,1,2))
+model_arima3
+summary(model_arima3)
+tsdiag(model_arima3)
+
+# ARIMA (1,1,3)
+model_arima4 = arima(yeovilton_temp,order = c(1,1,3))
+model_arima4
+
+tsdiag(model_arima4)
+
+# ARIMA (0,1,1)
+model_arima5 = arima(yeovilton_temp,order = c(0,1,1))
+model_arima5
+tsdiag(model_arima5)
+
+# ARIMA (0,1,2)
+model_arima6 = arima(yeovilton_temp,order = c(0,1,2))
+model_arima6
+tsdiag(model_arima6)
+
+# ARIMA (2,1,0)
+model_arima7 = arima(yeovilton_temp,order = c(2,1,0))
+model_arima7
+summary(model_arima7)
+
+tsdiag(model_arima3)
+
+# prediction:
+ARIMA1_2 = forecast::Arima(yeovilton_temp,c(1,1,2))
+fit_arima = as.matrix(fitted(ARIMA1_2))
+
+ARIMA_prediction = predict(model_arima3,n.ahead = 7)
+
+#orginal data as data frame:
+yeovilton_temp_df = data.frame(as.matrix(yeovilton_temp),
+                               date=time(yeovilton_temp), pred_value = fit_arima)
+
+actual_val_pred$val = data.frame(date = Temp_org$Date[306:312], val = Temp_org$Yeovilton[306:312])
+
+# prediction and CI
+CI_low_Y = as.matrix(ARIMA_prediction$pred - 1.96*ARIMA_prediction$se)
+CI_upper_Y = as.matrix(ARIMA_prediction$pred + 1.96*ARIMA_prediction$se)
+
+yeovilton_temp_df_pred = data.frame(pred = as.matrix(ARIMA_prediction$pred),
+                                    time = Temp_org$Date[c(306,307,308,309,310,311,312)],
+                                    CI_low_Y, CI_upper_Y)
+
+ggplot()+
+  geom_line(data = yeovilton_temp_df[250:305,], aes(x = date, y = yeovilton_temp), size = 0.9)+
+  geom_line(data = yeovilton_temp_df[250:305,], aes(x = date, y = pred_value, colour = 'Predicted'), size = 1.1)+
+  geom_line(data = actual_val_pred, aes(x = date, y = val, colour = 'Actual'), size = 0.9)+
+  geom_line(data = yeovilton_temp_df_pred, aes (x = time, y = pred, colour = 'Predicted ahead'), size = 1.1)+
+  geom_line(data = yeovilton_temp_df_pred, aes (x = time, y = CI_low_Y, colour = 'CI'),linetype = "dashed", size = 1)+
+  geom_line(data = yeovilton_temp_df_pred, aes (x = time, y = CI_upper_Y, colour = 'CI'),linetype = "dashed", size = 1)+
+  labs(y = "Temperature",x = "Date",title = "Yeovilton timeseries prediction")
+
+
+
+nrow(yeovilton_temp_df)
+
+# DUN FELL:
+Dunfell_temp = xts(time_series_data$Dun_Fell,time_series_data$Date )
+ARIMA1_dunfell = forecast::Arima(Dunfell_temp,c(1,1,2))
+plot(Dunfell_temp)
+fit_dunfell = as.matrix(fitted(ARIMA1_dunfell))
+df_dunfell = data.frame(date = time(Dunfell_temp),Dunfell_temp ,fit_dunfell)
+
+w1 = ggplot(df_dunfell)+
+  geom_line(aes(x = date , y = Dunfell_temp,colour = 'Actual'),size = 1)+
+  geom_line(aes(x = date , y = fit_dunfell, colour = 'prediction'), size = 1)+
+  labs(y = "Temperature",x = "Date",title = "DUN FELL")
+
+
+model_arima_dunfell = arima(Dunfell_temp,order = c(1,1,2))
+model_arima_dunfell
+summary(model_arima_dunfell)
+tsdiag(model_arima_dunfell)
+
+# LONDON
+lonodn_temp = xts(time_series_data$London,time_series_data$Date )
+ARIMA1_london = forecast::Arima(lonodn_temp,c(1,1,2))
+plot(lonodn_temp)
+fit_london = as.matrix(fitted(ARIMA1_london))
+df_london = data.frame(date = time(lonodn_temp),temp = lonodn_temp ,fit = fit_london)
+
+w2 = ggplot(df_london)+
+  geom_line(aes(x = date , y = temp,colour = 'Actual'),size = 1)+
+  geom_line(aes(x = date , y = fit, colour = 'prediction'), size = 1)+
+  labs(y = "Temperature",x = "Date",title = "LONDON")
+
+
+
+model_arima_london = arima(lonodn_temp,order = c(1,1,2))
+model_arima_london
+summary(model_arima_london)
+tsdiag(model_arima_london)
+
+# LYNEHAM
+
+lyneham_temp = xts(time_series_data$Lyneham,time_series_data$Date )
+ARIMA1_lyneham = forecast::Arima(lyneham_temp,c(1,1,2))
+plot(lyneham_temp)
+fit_lyneham = as.matrix(fitted(ARIMA1_lyneham))
+df_lyneham = data.frame(date = time(lyneham_temp),temp = lyneham_temp ,fit = fit_lyneham)
+
+w3 = ggplot(df_lyneham)+
+  geom_line(aes(x = date , y = temp,colour = 'Actual'),size = 1)+
+  geom_line(aes(x = date , y = fit, colour = 'prediction'), size = 1)+
+  labs(y = "Temperature",x = "Date",title = "LYNEHAM")
+
+
+model_arima_lyneham = arima(lyneham_temp,order = c(1,1,2))
+model_arima_lyneham
+summary(model_arima_lyneham)
+tsdiag(model_arima_lyneham)
+
+# STORNOWAY
+
+stornoway_temp = xts(time_series_data$Stornoway,time_series_data$Date )
+ARIMA1_stornoway = forecast::Arima(stornoway_temp,c(1,1,2))
+plot(stornoway_temp)
+fit_stornoway = as.matrix(fitted(ARIMA1_stornoway))
+df_stornoway = data.frame(date = time(stornoway_temp),temp = stornoway_temp ,fit = fit_stornoway)
+
+w4 = ggplot(df_stornoway)+
+  geom_line(aes(x = date , y = temp,colour = 'Actual'),size = 1)+
+  geom_line(aes(x = date , y = fit, colour = 'prediction'), size = 1)+
+  labs(y = "Temperature",x = "Date",title = "STORNOWAY")
+
+
+model_arima_stornoway = arima(stornoway_temp,order = c(1,1,2))
+model_arima_stornoway
+summary(model_arima_stornoway)
+tsdiag(model_arima_stornoway)
+
+plot_stornoway = ggarrange(w1,w2,w3,w4, ncol = 2, nrow = 2)
+plot_stornoway
+
+
+
+##################################### Weekly ARIMA ##################################
+
+# WEEKLY AVERAGE:
+df_Yeovilton  = data.frame(date = Temp_org$Date , temp = as.integer(Temp_org$Yeovilton))
+
+Temp_org$Yeovilton[346:366]
+
+df_Yeovilton_weekly = df_Yeovilton %>% 
+  as_tsibble(index = date) %>% 
+  index_by(year_week = ~ yearweek(.)) %>% # weekly aggregates
+  summarise(across(where(is.integer), mean, rm.na = TRUE))
+
+
+weekly_trend =  ts(df_Yeovilton_weekly[1:50,]$temp, start = df_Yeovilton_weekly[1:50,]$year_week)
+ggtsdisplay(weekly_trend, main = "Yeovilton averaged weekly time series")
+
+spec.pgram(weekly_trend, log = 'no')
+
+# DIFFRENCING
+yeo_diff1 = diff(weekly_trend,differences = 1)
+ggtsdisplay(yeo_diff1)
+
+# AUTO ARIMA
+model_auto <- auto.arima(weekly_trend, max.p = 4, max.q = 4, max.d = 1, seasonal = FALSE)
+model_auto
+
+# BUILDING MODELS:
+
+# ARIMA (0,1,1)
+model_ARIMA0 = arima(weekly_trend,order = c(0,1,1))
+model_ARIMA0
+summary(model_arima7)
+# ARIMA (0,1,2)
+model_ARIMA1 = arima(weekly_trend,order = c(0,1,2))
+model_ARIMA1
+
+# ARIMA (1,1,0)
+model_ARIMA2 = arima(weekly_trend,order = c(1,1,0))
+model_ARIMA2
+
+# ARIMA (2,1,0)
+model_ARIMA3 = arima(weekly_trend,order = c(2,1,0))
+model_ARIMA3
+
+# ARIMA (1,1,1)
+model_ARIMA4 = arima(weekly_trend,order = c(1,1,1))
+model_ARIMA4
+
+# ARIMA (1,1,2)
+model_ARIMA5 = arima(weekly_trend,order = c(1,1,2))
+model_ARIMA5
+
+# model validation:
+tsdiag(model_ARIMA2)
+
+
+# prediction:
+ARIMAweek_2 = forecast::Arima(weekly_trend,c(1,1,0))
+
+ARIMA_prediction = predict(model_ARIMA2,n.ahead = 3)
+
+
+CI_low_week = as.matrix(ARIMA_prediction$pred - 1.96*ARIMA_prediction$se)
+CI_upper_week = as.matrix(ARIMA_prediction$pred + 1.96*ARIMA_prediction$se)
+
+
+data_week = data.frame(df_Yeovilton_weekly[1:50,1], as.matrix(ARIMAweek_2$fitted), as.matrix(weekly_trend))
+temp = c(11.3,12.21,3.4)
+data_week_nextpred = data.frame(df_Yeovilton_weekly[51:53,1],
+                                pred_n = as.matrix(ARIMA_prediction$pred),CI_low_week,CI_upper_week , temp)
+
+ggplot(data_week)+
+  geom_line(aes(x = year_week , y = as.matrix.weekly_trend.,colour = 'Actual'),size = 1)+
+  geom_line(aes(x = year_week  , y = as.matrix.ARIMAweek_2.fitted. , colour = 'predicted fit'), size = 1)+
+  geom_line(data = data_week_nextpred, aes(x = year_week , y = CI_low_week  ,colour = 'CI'),size = 1)+
+  geom_line(data = data_week_nextpred, aes(x = year_week , y = CI_upper_week , colour = 'CI'), size = 1)+
+  geom_line(data = data_week_nextpred, aes(x = year_week , y = pred_n , colour = 'predicted weeks'), size = 1)+
+  geom_line(data = data_week_nextpred, aes(x = year_week , y = temp , colour = 'Actual'), size = 1)+
+  labs(y = "Temperature",x = "Date",title = "Weekly Prediction Model")
+
+
+############################################## Daily arima for last 21 days ######################################
+
+df_Yeovilton  = data.frame(date = Temp_org$Date , temp = Temp_org$Yeovilton)
+
+last21d_trend =  ts(df_Yeovilton[1:345,]$temp, start = df_Yeovilton[1:345,]$date)
+ggtsdisplay(last21d_trend)
+
+
+d21_diff1 = diff(last21d_trend,differences = 1)
+ggtsdisplay(d21_diff1)
+
+
+# AUTO ARIMA
+d21_auto <- auto.arima(last21d_trend, max.p = 4, max.q = 4, max.d = 1, seasonal = FALSE)
+d21_auto
+
+
+# BUILDING MODELS:
+# ARIMA (0,1,1)
+model_ARIMA0_d21 = arima(last21d_trend,order = c(0,1,1))
+model_ARIMA0_d21
+
+# ARIMA (0,1,2)
+model_ARIMA1_d21 = arima(last21d_trend,order = c(0,1,2))
+model_ARIMA1_d21
+
+# ARIMA (1,1,0)
+model_ARIMA2_d21 = arima(last21d_trend,order = c(1,1,0))
+model_ARIMA2_d21
+
+# ARIMA (2,1,0)
+model_ARIMA3_d21 = arima(last21d_trend,order = c(2,1,0))
+model_ARIMA3_d21
+
+# ARIMA (1,1,1)
+model_ARIMA4_d21 = arima(last21d_trend,order = c(1,1,1))
+model_ARIMA4_d21
+
+# ARIMA (1,1,2)
+model_ARIMA5_d21 = arima(last21d_trend,order = c(1,1,2))
+model_ARIMA5_d21
+
+# ARIMA (1,1,2)
+model_ARIMA6_d21 = arima(last21d_trend,order = c(2,1,1))
+model_ARIMA6_d21
+
+# model validation:
+tsdiag(model_ARIMA5_d21)
+
+
+
+# prediction:
+ARIMAd21_2 = forecast::Arima(last21d_trend,c(1,1,0))
+
+ARIMA_predictiond21 = predict(ARIMAd21_2,n.ahead = 21)
+
+
+CI_low_d21 = as.matrix(ARIMA_predictiond21$pred - 1.96*ARIMA_predictiond21$se)
+CI_upper_d21 = as.matrix(ARIMA_predictiond21$pred + 1.96*ARIMA_predictiond21$se)
+
+
+data_d21 = data.frame(date = df_Yeovilton[1:345,1], pred = as.matrix(ARIMAd21_2$fitted), actual =as.matrix(last21d_trend))
+
+data_d21_nextpred = data.frame(date = df_Yeovilton[346:366,1],
+                               pred_n = as.matrix(ARIMA_predictiond21$pred),CI_low_d21,CI_upper_d21, actual = df_Yeovilton[346:366,2] )
+
+ggplot(data_d21)+
+  geom_line(aes(x = date  , y = actual,colour = 'Actual'),size = 1)+
+  geom_line(aes(x = date   , y = pred , colour = 'prediction'), size = 1)+
+  geom_line(data = data_d21_nextpred, aes(x = date , y = CI_low_d21  ,colour = 'CI'),size = 1)+
+  geom_line(data = data_d21_nextpred, aes(x = date , y = CI_upper_d21 , colour = 'CI'), size = 1)+
+  geom_line(data = data_d21_nextpred, aes(x = date , y = pred_n , colour = 'prediction without data'), size = 1)+
+  geom_line(data = data_d21_nextpred, aes(x = date , y = actual , colour = 'Actual'), size = 1)+
+  labs(y = "Temperature",x = "Date",title = "Daily Prediction Model")
+
+
+```
+
+
